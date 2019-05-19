@@ -1,0 +1,1102 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>0xbtcvault</title>
+
+    <link rel="stylesheet" type="text/css" href="style.css">
+
+    <script src="web3.min.js"></script>
+
+</head>
+<body>
+    <div class="container">
+        <h1>0xBTC Vault</h1>
+
+        <p class="info">
+            Tokenaddress: <span id="tokenAddress"></span><br />
+            Contractaddress: <span id="vaultContractAddress"></span>
+        </p>
+        <p class="info">
+            <!--Total token in contract: <span id="totalBalance">0</span><br />-->
+            Locked token in contract: <span id="totalLockedBalance">0</span>
+            <br />Fee for unlocking pre-expiration: <span id="fee">0</span>
+        </p>
+        <p class="info">
+            Your wallet balance: <span id="walletBalance">0</span>
+            <br />Your free balance in contract: <span id="freeBalance">0</span>
+            <br />Your locked balance: <span id="lockedBalance">0</span>
+        </p>
+
+        <form id="depositForm">
+            <label for="depositAmount">Deposit</label>
+            <input class='textField' id="depositAmount" type="number" step="any" min="0"/>
+            <input type='submit' class="floatingbutton" id="depositButton" />
+        </form>
+        <form id="withdrawForm">
+            <label for="withdrawAmount">Withdraw</label>
+            <input class='textField' id="withdrawAmount" type="number" step="any" min="0"/>
+            <input type='submit' class="floatingbutton" id="withdrawButton" />
+        </form>
+
+		<form id="lockForm">
+            <label for="lockAmount">Amount</label>
+            <input class='textField' id="lockAmount" type="number" step="any" min="0"/>
+            <label for="plans">Selected Plan</label>
+			<select class='dropdown' id="plans" />
+			<label for="continous">Lock continously?</label>
+			<input type='checkbox' class='checkbox' id="continous" />
+            <input type='submit' class="floatingbutton" id="lockButton" />
+		</form>
+		
+        <div id="entries" />
+
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"></script>
+
+    <script>
+
+		var vaultContractAddress = '0x13749d20a27b50ec9e1c189d002931ed24fa3c4b';
+        var tokenAddress = '0x1ed72f8092005f7ac39b76e4902317bd0649aee9';
+		var vault;
+		var tokenDecimals = 8;
+		var tokenInterface;
+
+		var plansCount = 4;
+		
+		var account;
+		
+		window.addEventListener('load', function()
+		{
+			if (typeof web3 == 'undefined')
+			{
+			    //web3 = new Web3(new Web3.providers.HttpProvider("http://localhost:8545"));
+			    web3 = new Web3(new Web3.providers.HttpProvider("https://ropsten.infura.io/v3/5b38a753e264427bbb1cb02069ab1ee4"));
+			    web3.eth.defaultAccount = web3.eth.accounts[0];
+				account = web3.eth.accounts[0];
+				alert("Please install a Web3 provider to interact with the vault (ie Metamask Browser Plugin)");
+			}
+			var accountInterval = setInterval(function() 
+			{
+				if (web3.eth.accounts[0] !== account) 
+				{
+					account = web3.eth.accounts[0];
+					refresh();
+				}
+			}, 10000);
+			
+			vault = getVaultContract().at(vaultContractAddress);
+			tokenInterface = getTokenInterfaceContract().at(tokenAddress);
+			
+			initializeApp();
+			
+			
+			var filter = web3.eth.filter('latest');
+			filter.watch(function (error, result)
+			{
+				refresh();
+			});
+
+			
+		});
+		
+		function initializeApp()
+		{
+		    $("#vaultContractAddress").html(vaultContractAddress);
+			$("#tokenAddress").html(tokenAddress);
+			
+		    vault.earlyUnlockFeePercentage(function (error, result) {
+		        if (error)
+		            return;
+		        fee = result.toNumber() / 100;
+		        $("#fee").html(result + "%");
+		    });
+			
+			$("#depositForm").submit(function()
+			{
+				console.log($("#depositAmount").val() + ", parse amount: " + parseFloat($("#depositAmount").val(),10));
+				var amount = parseFloat($("#depositAmount").val(),10) * Math.pow(10, tokenDecimals);
+				if(isNaN(amount))
+				    return;
+				console.log("approveAndCall, amount: " + amount);
+				var txdata = tokenInterface.approveAndCall.getData(vaultContractAddress, amount, 0);
+				var estimate = web3.eth.estimateGas({
+				    to: tokenAddress,
+				    data: txdata
+				});
+				console.log(estimate);
+				web3.eth.sendTransaction({
+				    to: tokenAddress,
+				    data: txdata,
+				    gas: estimate + 30000
+				});
+			});
+			$("#withdrawForm").submit(function()
+			{
+				var amount = parseFloat($("#withdrawAmount").val(),10) * Math.pow(10, tokenDecimals);
+				if(isNaN(amount))
+				    return;
+
+				var txdata = vault.withDraw.getData(amount);
+				var estimate = web3.eth.estimateGas({
+				    to: vaultContractAddress,
+				    data: txdata
+				});
+				console.log(estimate);
+				web3.eth.sendTransaction({
+				    to: vaultContractAddress,
+				    data: txdata,
+				    gas: estimate + 30000,
+                    gasPrice: 1,
+				});
+			});
+			for (i = 0; i < plansCount; i++) 
+			{
+				let index = i;
+		        vault.plans(index,
+                    function (error, result) {
+                        if (error)
+                            return;
+						$("#plans").append("<option value='" + index + "'>" 
+						+  " Duration: " + createTimeStringFromBlocks(result[0].toNumber())
+						+  " Multiplier: " + result[1].toNumber()
+						+ "</option>");
+                    }
+                );
+			}
+			$("#lockForm").submit(function()
+			{
+				var amount = parseFloat($("#lockAmount").val(),10) * Math.pow(10, tokenDecimals);
+				if(isNaN(amount) || amount < 100 || freeBalance < amount)
+				    return;
+				var planindex = $("#plans").val();
+				var continous = $("#continous")[0].checked;
+				console.log(amount + " " + planindex + " " + continous);
+				var txdata = vault.lock.getData(amount, planindex, continous);
+				var estimate = web3.eth.estimateGas({
+				    to: vaultContractAddress,
+				    data: txdata
+				});
+				console.log(estimate);
+				web3.eth.sendTransaction({
+				    to: vaultContractAddress,
+				    data: txdata,
+				    gas: estimate + 30000,
+                    gasPrice: 1,
+				});
+			});
+		}
+		
+		function refresh()
+		{
+			console.log(account);
+			return;
+			console.log("refresh");
+		    vault.accounts(account,
+                function (error, result) {
+                    if (error)
+						return;
+					var freeBalance = result[0].toNumber()/ Math.pow(10, tokenDecimals);
+					$("#freeBalance").html(freeBalance);
+					$("#withdrawAmount").attr({
+					   "max" : freeBalance
+					});
+					$("#lockAmount").attr({
+					   "max" : freeBalance
+					});
+                }
+            );
+			vault.totalLockedBalance(function (error, result) 
+			{
+				if (!error)
+					$("#totalLockedBalance").html(result.toNumber() / Math.pow(10, tokenDecimals));
+			});
+			tokenInterface.balanceOf(account,
+                function (error, result) {
+                    if (error)
+						return;
+					var walletBalance = result.toNumber() / Math.pow(10, tokenDecimals);
+					$("#walletBalance").html(walletBalance);
+					$("#depositAmount").attr({
+					   "max" : walletBalance
+					});
+                }
+            );
+			$("#entries").empty();
+            $("#lockedBalance").html("0");
+			vault.getOwnedEntriesLength(account, 
+			function (error, result) {
+				if (error)
+					return;
+				var lockedBalance = 0;
+				for (i = 0; i < result.toNumber() ; i++) 
+				{
+					let index = i;
+					vault.getOwnedEntryIndex(account, index, 
+					function (error, result) {
+						if (error)
+							return;
+						let entryIndex = result.toNumber();
+						vault.entryLedger(entryIndex, 
+						function (error, result) {
+							if (error)
+								return;
+							if(result[6]){
+								var amount =  result[2].toNumber() / Math.pow(10, tokenDecimals);
+								$("#entries").append(
+								"<p>Entry " + entryIndex + ", amount: " + result[2].toNumber() / Math.pow(10, tokenDecimals) + "</p>"
+								+ "<button class='floatingButton' id='unlockButton_" + index + "'>Unlock and payout</button>"
+								);
+								lockedBalance += amount;
+
+								$("#unlockButton_" + index).click(function () {
+									let i = index;
+									vault.prepareUnlockDataFor(i, 
+									function (error, unlockData) {
+										if (error)
+											return;
+											
+										var txdata = vault.unlock.getData(unlockData[0], unlockData[1], unlockData[2]);
+
+										var estimate = web3.eth.estimateGas({
+											to: vaultContractAddress,
+											data: txdata
+										});
+
+										console.log(estimate);
+										web3.eth.sendTransaction({
+											to: vaultContractAddress,
+											data: txdata,
+											gas: estimate + 200000
+										});
+									});
+								});
+							}
+							else
+								$("#entries").append("<p>Inactive Entry " + entryIndex + ", amount: " + result[2].toNumber() / Math.pow(10, tokenDecimals) + "</p>");
+						});
+					});
+				}
+			});
+		}
+		
+
+        function updateLockedBalances() {
+            $("#lockedBalance").html("0");
+            for (i = 0; i < plansCount; i++)
+                $("#plan_lockedbalances_" + i).empty();
+            vault.viewLockedBalancesCount(
+				function (error, result) {
+				    if (error)
+				        return;
+				    web3.eth.getBlock(web3.eth.blockNumber, function (error, block) {
+				        if (error)
+				            return;
+				        var currentTimestamp = block.timestamp;
+				        var lockedBalance = 0;
+				        for (i = 0; i < result.toNumber() ; i++) {
+				            let index = i;
+				            vault.viewLockedBalance(index,
+                                function (error, result) {
+                                    if (error)
+                                        return;
+
+                                    if ($("#plan_lockedbalances_" + index).children().length == 0)
+                                        $("#plan_lockedbalances_" + index).append("<h3>Your locked balances:</h3>");
+
+
+                                    var baseAmount = tokenValue(result[1]);
+                                    var power = tokenValue(result[2]);
+                                    var duration = createTimeStringFromSeconds(result[3].toNumber() - currentTimestamp);
+                                    var expired = result[3].toNumber() - currentTimestamp <= 0;
+                                    var unpayedoutDivs = tokenValue(result[4]);
+                                    var baseFee = tokenValue(result[5]);
+                                    var divFee = tokenValue(result[6]);
+                                    var heldDivs = tokenValue(result[7]);
+                                    var payedOutDivs = tokenValue(result[8]);
+                                    var continous = result[9];
+                                    var item = "<div class='lockedBalance'>"
+                                        + "<p>"
+                                        + "Power: " + power
+                                        + "  -  "
+                                        + (continous ? "Locked continously" : "Duration until release: " + duration)
+                                        + "  -  "
+                                        + "<button class='floatingButton' id='toggleContinousSubscription_" + index + "'>"
+                                        + (continous ? "Stop continous subscription" : "Subscribe continously")
+                                        + "</button>"
+                                        + "</p>"
+                                        + "<p>"
+                                        + "Locked amount: " + (+(baseAmount + unpayedoutDivs + heldDivs).toFixed(tokenDecimals))
+                                        + " (" + baseAmount + " initial amount + " + unpayedoutDivs + " not payed out dividends + " + heldDivs + " dividends on hold)"
+                                        + "</p>"
+                                        + "<p>"
+                                        + "New dividends: " + unpayedoutDivs
+                                        + "  -  "
+                                        + "<button class='floatingButton' id='payoutDividendsButton_" + index + "'>Pay out new Dividends</button>"
+                                        + "  -  "
+                                        + "payed out dividends: " + payedOutDivs
+                                        + "</p>"
+                                        + "<p>"
+                                        + "Fee to unlock: " + (+(baseFee + divFee).toFixed(tokenDecimals))
+                                        + " (" + baseFee + " base fee + " + divFee + " fee on all dividends)"
+                                        + "  -  "
+                                        + "<button class='floatingButton' id='unlockButton_" + index + "'>Unlock and payout</button>"
+                                        + "</p>"
+                                        + "</div>";
+
+									lockedBalance += baseAmount + unpayedoutDivs;
+									$("#lockedBalance").html(lockedBalance);
+	
+                                    $("#plan_lockedbalances_" + result[0].toNumber() + "").append(item);
+
+                                    $("#toggleContinousSubscription_" + index).click(function () {
+
+                                        var txdata = vault.toggleContinousSubscription.getData(index);
+
+                                        var estimate = web3.eth.estimateGas({
+                                            to: vaultContractAddress,
+                                            data: txdata
+                                        });
+
+                                        console.log(estimate);
+                                        web3.eth.sendTransaction({
+                                            to: vaultContractAddress,
+                                            data: txdata,
+                                            gas: estimate + 200000
+                                        },
+                                        function (error, result) {
+                                            if (error)
+                                                console.log(error);
+                                            updateLockedBalances();
+                                        });
+                                    });
+
+                                    $("#unlockButton_" + index).click(function () {
+                                        let i = index;
+                                        vault.findExcludePositions(
+                                            function (error, entryPositions) {
+                                                if (error) {
+                                                    console.log(error);
+                                                    return;
+                                                }
+                                                vault.findNewDividendsCount(i, function (error, dividendsPosition) {
+                                                    if (error) {
+                                                        console.log(error);
+                                                        return;
+                                                    }
+                                                    var txdata = vault.unlock.getData(i, entryPositions, dividendsPosition);
+                                                    var estimate = web3.eth.estimateGas({
+                                                        to: vaultContractAddress,
+                                                        data: txdata
+                                                    });
+                                                    console.log(estimate);
+                                                    web3.eth.sendTransaction({
+                                                        to: vaultContractAddress,
+                                                        data: txdata,
+                                                        gas: estimate + 200000
+                                                    },
+                                                    function (error, result) {
+                                                        if (error)
+                                                            console.log(error);
+                                                        updateLockedBalances();
+                                                    });
+                                                });
+                                            }
+                                        );
+                                    });
+                                    $("#payoutDividendsButton_" + index).click(function () {
+                                        let i = index;
+                                        vault.findNewDividendsCount(i, function (error, dividendsPosition) {
+                                            if (error) {
+                                                console.log(error);
+                                                return;
+                                            }
+                                            var txdata = vault.payoutDividends.getData(i, dividendsPosition);
+                                            var estimate = web3.eth.estimateGas({
+                                                to: vaultContractAddress,
+                                                data: txdata
+                                            });
+                                            console.log(estimate);
+                                            web3.eth.sendTransaction({
+                                                to: vaultContractAddress,
+                                                data: txdata,
+                                                gas: estimate + 200000
+                                            },
+                                            function (error, result) {
+                                                if (error)
+                                                    console.log(error);
+                                                updateLockedBalances();
+                                            });
+                                        });
+                                    });
+                                }
+                            );
+				        }
+				    });
+				}
+			);
+        }
+
+        function tokenValue(value)
+		{
+            var result;
+            if (typeof value == "number")
+                result = value / Math.pow(10, tokenDecimals);
+            else
+                result = value.toNumber() / Math.pow(10, tokenDecimals);
+            return +result.toFixed(tokenDecimals);
+        }
+		
+		function createTimeStringFromBlocks(blocks)
+		{
+			return createTimeStringFromSeconds(blocks * 15);
+		}
+        
+		function createTimeStringFromSeconds(seconds)
+        {
+            var result = "Expired";
+            if (seconds <= 0)
+                return result;
+
+            var days = Math.floor(seconds / (3600 * 24));
+            seconds -= days * 3600 * 24;
+            result = days + "d";
+            if (seconds <= 0)
+                return result;
+
+            var hours = Math.floor(seconds / 3600);
+            seconds -= hours * 3600;
+            result +=" " + hours + "h";
+            if (seconds <= 0)
+                return result;
+
+            var minutes = Math.floor(seconds / 60);
+            seconds -= minutes * 60;
+            result += " " + minutes + "m";
+            return result;
+        }
+
+		function getVaultContract()
+		{
+		    return web3.eth.contract(
+            [
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "from",
+				"type": "address"
+			},
+			{
+				"name": "amount",
+				"type": "uint256"
+			}
+		],
+		"name": "deposit",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "tknaddr",
+				"type": "address"
+			}
+		],
+		"name": "initializeTokenAddress",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "amount",
+				"type": "uint64"
+			},
+			{
+				"name": "planIndex",
+				"type": "uint32"
+			},
+			{
+				"name": "continuous",
+				"type": "bool"
+			}
+		],
+		"name": "lock",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "ownedEntryIndex",
+				"type": "uint256"
+			},
+			{
+				"name": "dividendsCount",
+				"type": "uint256"
+			}
+		],
+		"name": "payoutDividendsFor",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "receiveFrom",
+				"type": "address"
+			},
+			{
+				"name": "amount",
+				"type": "uint256"
+			},
+			{
+				"name": "tknaddr",
+				"type": "address"
+			},
+			{
+				"name": "data",
+				"type": "bytes"
+			}
+		],
+		"name": "receiveApproval",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "ownedEntryIndex",
+				"type": "uint256"
+			}
+		],
+		"name": "toggleContinuousSubscription",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "amount",
+				"type": "uint64"
+			}
+		],
+		"name": "withDraw",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"payable": true,
+		"stateMutability": "payable",
+		"type": "fallback"
+	},
+	{
+		"inputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "constructor"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"name": "ownedEntryIndex",
+				"type": "uint256"
+			},
+			{
+				"name": "excludePositions",
+				"type": "uint256[4]"
+			},
+			{
+				"name": "dividendsCount",
+				"type": "uint256"
+			}
+		],
+		"name": "unlock",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "",
+				"type": "address"
+			}
+		],
+		"name": "accounts",
+		"outputs": [
+			{
+				"name": "freeBalance",
+				"type": "uint64"
+			},
+			{
+				"name": "active",
+				"type": "bool"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "activeAddresses",
+		"outputs": [
+			{
+				"name": "",
+				"type": "address"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [],
+		"name": "earlyUnlockFeePercentage",
+		"outputs": [
+			{
+				"name": "",
+				"type": "uint64"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "entryIndex",
+				"type": "uint256"
+			}
+		],
+		"name": "entryIsLocked",
+		"outputs": [
+			{
+				"name": "isActive_out",
+				"type": "bool"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "entryLedger",
+		"outputs": [
+			{
+				"name": "feeHistoryIndex",
+				"type": "uint256"
+			},
+			{
+				"name": "balanceTreeIndex",
+				"type": "uint256"
+			},
+			{
+				"name": "amount",
+				"type": "uint64"
+			},
+			{
+				"name": "paidOutDividends",
+				"type": "uint64"
+			},
+			{
+				"name": "heldBackDividends",
+				"type": "uint64"
+			},
+			{
+				"name": "planIndex",
+				"type": "uint32"
+			},
+			{
+				"name": "active",
+				"type": "bool"
+			},
+			{
+				"name": "continuous",
+				"type": "bool"
+			},
+			{
+				"name": "completedSuccessfully",
+				"type": "bool"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "feeHistory",
+		"outputs": [
+			{
+				"name": "block",
+				"type": "uint256"
+			},
+			{
+				"name": "feePerShare_magnified_total",
+				"type": "uint256"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [],
+		"name": "FEEPERSHARE_MAGNIFIER",
+		"outputs": [
+			{
+				"name": "",
+				"type": "uint64"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [],
+		"name": "getEntryLedgerLength",
+		"outputs": [
+			{
+				"name": "count_out",
+				"type": "uint256"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "entryLedgerEntryIndex",
+				"type": "uint256"
+			},
+			{
+				"name": "dividendsCount",
+				"type": "uint256"
+			}
+		],
+		"name": "getNewDividendsFor",
+		"outputs": [
+			{
+				"name": "newDividends_out",
+				"type": "uint64"
+			},
+			{
+				"name": "newHeldBackDividends_out",
+				"type": "uint64"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "accountAddress",
+				"type": "address"
+			}
+		],
+		"name": "getOwnedEntriesLength",
+		"outputs": [
+			{
+				"name": "count_out",
+				"type": "uint256"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "accountAddress",
+				"type": "address"
+			},
+			{
+				"name": "index",
+				"type": "uint256"
+			}
+		],
+		"name": "getOwnedEntryIndex",
+		"outputs": [
+			{
+				"name": "index_out",
+				"type": "uint256"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [],
+		"name": "getTotalPower",
+		"outputs": [
+			{
+				"name": "totalPower_out",
+				"type": "uint128"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "amount",
+				"type": "uint64"
+			}
+		],
+		"name": "getUnlockFee",
+		"outputs": [
+			{
+				"name": "fee_out",
+				"type": "uint64"
+			}
+		],
+		"payable": false,
+		"stateMutability": "pure",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [],
+		"name": "PLANCOUNT",
+		"outputs": [
+			{
+				"name": "",
+				"type": "uint64"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "plans",
+		"outputs": [
+			{
+				"name": "blocksLocked",
+				"type": "uint128"
+			},
+			{
+				"name": "multiplier",
+				"type": "uint64"
+			},
+			{
+				"name": "continuousAmount",
+				"type": "uint64"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "ownedEntryIndex",
+				"type": "uint256"
+			}
+		],
+		"name": "preparePayoutDividendsDataFor",
+		"outputs": [
+			{
+				"name": "ownedEntryIndex_out",
+				"type": "uint256"
+			},
+			{
+				"name": "dividendsCount_out",
+				"type": "uint256"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [
+			{
+				"name": "ownedEntryIndex",
+				"type": "uint256"
+			}
+		],
+		"name": "prepareUnlockDataFor",
+		"outputs": [
+			{
+				"name": "ownedEntryIndex_out",
+				"type": "uint256"
+			},
+			{
+				"name": "excludePositions_out",
+				"type": "uint256[4]"
+			},
+			{
+				"name": "dividendsCount_out",
+				"type": "uint256"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [],
+		"name": "tokenAddress",
+		"outputs": [
+			{
+				"name": "",
+				"type": "address"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"constant": true,
+		"inputs": [],
+		"name": "totalLockedBalance",
+		"outputs": [
+			{
+				"name": "",
+				"type": "uint64"
+			}
+		],
+		"payable": false,
+		"stateMutability": "view",
+		"type": "function"
+	}
+]
+			);
+		}
+
+		function getTokenInterfaceContract() {
+		    return web3.eth.contract(
+			[{
+			    "constant": false,
+			    "inputs": [
+					{
+					    "name": "spender",
+					    "type": "address"
+					},
+					{
+					    "name": "tokens",
+					    "type": "uint256"
+					},
+					{
+					    "name": "data",
+					    "type": "bytes"
+					}
+			    ],
+			    "name": "approveAndCall",
+			    "outputs": [
+					{
+					    "name": "success",
+					    "type": "bool"
+					}
+			    ],
+			    "payable": false,
+			    "stateMutability": "nonpayable",
+			    "type": "function"
+			},
+			{
+			"constant": true,
+			"inputs": [
+				{
+					"name": "tokenOwner",
+					"type": "address"
+				}
+			],
+			"name": "balanceOf",
+			"outputs": [
+				{
+					"name": "balance",
+					"type": "uint256"
+				}
+			],
+			"payable": false,
+			"stateMutability": "view",
+			"type": "function"
+				}
+			]);
+		}
+    </script>
+
+</body>
+</html>
+
+
