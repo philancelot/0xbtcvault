@@ -86,7 +86,7 @@
 					account = web3.eth.accounts[0];
 					refresh();
 				}
-			}, 10000);
+			}, 1000);
 			
 			vault = getVaultContract().at(vaultContractAddress);
 			tokenInterface = getTokenInterfaceContract().at(tokenAddress);
@@ -192,9 +192,6 @@
 		
 		function refresh()
 		{
-			console.log(account);
-			return;
-			console.log("refresh");
 		    vault.accounts(account,
                 function (error, result) {
                     if (error)
