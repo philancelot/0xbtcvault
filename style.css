@@ -1,0 +1,63 @@
+body {
+    background-color:#F0F0F0;
+    padding: 2em;
+    font-family: 'Raleway','Source Sans Pro', 'Arial';
+}
+
+.container {
+    width: 90%;
+    margin: 0 auto;
+}
+
+label {
+    display:block;
+}
+
+input {
+    display:inline;
+    padding: 5px;
+    margin-bottom: 1em;
+    margin-right: 5px;
+}
+input[type=checkbox] {
+  transform: scale(1.5);
+  margin: 10px;
+}
+
+input[type=number] 
+{
+    width: 300px;
+}
+
+button {
+    margin: 0 0;
+    padding: 5px;
+    display:block;
+}
+
+.floatingButton {
+    display:inline;
+}
+
+.info {
+    padding:1em;
+    background-color:#fff;
+	margin: 1em 0;
+}
+.info span{
+	color: blue;
+}
+
+.plan{
+    margin: 1em 0;
+    padding:1em;
+    background-color:#fff;
+	margin: 1em 0;
+}
+.plan p {
+    margin-right: 1em;
+}
+
+.lockedBalance {
+    margin: 1em;
+}
